@@ -9,97 +9,80 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-const uri = `mongodb+srv://Ninja_db_user:N3JD5TyTAzit8ELd@work.lzfyzuo.mongodb.net/?retryWrites=true&w=majority&appName=Work`;
+// Get MongoDB URI from environment variables
+const uri = process.env.MONGODB_URI;
 
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-  serverSelectionTimeoutMS: 10000,
-  connectTimeoutMS: 10000,
-});
+if (!uri) {
+  console.error("❌ MONGODB_URI is not defined in environment variables");
+  process.exit(1);
+}
 
-let database;
-let clientsCollection;
-let blogsCollection;
-let isConnected = false;
-let connectionError = null;
+// Cache MongoDB connection globally
+let cachedClient = null;
+let cachedDb = null;
 
-async function run() {
+async function connectToDatabase() {
+  if (cachedClient && cachedDb) {
+    console.log("🔄 Using cached database connection");
+    return { client: cachedClient, database: cachedDb };
+  }
+
+  console.log("🔄 Creating new database connection...");
+
+  const client = new MongoClient(uri, {
+    serverApi: {
+      version: ServerApiVersion.v1,
+      strict: true,
+      deprecationErrors: true,
+    },
+    serverSelectionTimeoutMS: 10000,
+    connectTimeoutMS: 10000,
+  });
+
   try {
-    console.log("🔄 Connecting to MongoDB...");
     await client.connect();
+    const database = client.db("BUSINESS_DB");
 
-    database = client.db("BUSINESS_DB");
-    clientsCollection = database.collection("clients_info");
-    isConnected = true;
+    // Cache the connection
+    cachedClient = client;
+    cachedDb = database;
 
-    console.log("✅ Connected to MongoDB!");
-    console.log("✅ Database and collection ready!");
-
-    const count = await clientsCollection.countDocuments();
-    console.log(`📊 Collection has ${count} documents`);
+    console.log("✅ Connected to MongoDB successfully!");
+    return { client, database };
   } catch (error) {
     console.error("❌ MongoDB connection failed:", error.message);
-    connectionError = error.message;
-    isConnected = false;
+    throw error;
   }
 }
 
-run();
+// Health check endpoint
+app.get("/status", async (req, res) => {
+  try {
+    const { database } = await connectToDatabase();
+    await database.command({ ping: 1 });
+    res.json({
+      success: true,
+      message: "Database connected successfully",
+      timestamp: new Date(),
+      environment: process.env.NODE_ENV || "development",
+    });
+  } catch (error) {
+    res.status(503).json({
+      success: false,
+      message: "Database connection failed",
+      error: error.message,
+    });
+  }
+});
 
-// app.get("/clients", async (req, res) => {
-//   try {
-//     if (!isConnected || !clientsCollection) {
-//       return res.status(503).json({
-//         success: false,
-//         message: "Database not connected yet. Please wait...",
-//         error: connectionError,
-//         status: "connecting",
-//       });
-//     }
-
-//     const clients = await clientsCollection.find().toArray();
-//     res.json({
-//       success: true,
-//       message: "All clients data retrieved successfully",
-//       data: clients,
-//       count: clients.length,
-//       timestamp: new Date(),
-//     });
-//   } catch (error) {
-//     res.status(500).json({
-//       success: false,
-//       message: "Failed to fetch clients data",
-//       error: error.message,
-//     });
-//   }
-// });
-
-// app.get("/status", (req, res) => {
-//   res.json({
-//     server: "Running ✅",
-//     database: isConnected ? "Connected ✅" : "Disconnected ❌",
-//     error: connectionError,
-//     databaseName: "BUSINESS_DB",
-//     collectionName: "clients_info",
-//   });
-// });
-
-
-
+// Get all blogs
 app.get("/blogs", async (req, res) => {
   try {
-    if (!isConnected || !clientsCollection) {
-      return res.status(503).json({
-        success: false,
-        message: "Database not connected yet. Please wait...",
-      });
-    }
+    const { database } = await connectToDatabase();
+    const clientsCollection = database.collection("clients_info");
 
     const blogs = await clientsCollection.find().toArray();
+
     res.json({
       success: true,
       data: blogs,
@@ -107,46 +90,48 @@ app.get("/blogs", async (req, res) => {
       timestamp: new Date(),
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error("Error fetching blogs:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 });
 
-
-
+// Get single blog by slug
 app.get("/blogs/:slug", async (req, res) => {
   try {
-    if (!isConnected || !clientsCollection) {
-      return res.status(503).json({
-        success: false,
-        message: "Database not connected yet. Please wait...",
-      });
-    }
+    const { database } = await connectToDatabase();
+    const clientsCollection = database.collection("clients_info");
 
     const { slug } = req.params;
     const blog = await clientsCollection.findOne({ slug });
 
     if (!blog) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Blog not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Blog not found",
+      });
     }
 
-    res.json({ success: true, data: blog });
+    res.json({
+      success: true,
+      data: blog,
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error("Error fetching blog:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 });
 
-// POST /blog - Add a new blog
+// Create a new blog
 app.post("/postblogs", async (req, res) => {
   try {
-    if (!isConnected || !clientsCollection) {
-      return res.status(503).json({
-        success: false,
-        message: "Database not connected yet. Please wait...",
-        error: connectionError,
-      });
-    }
+    const { database } = await connectToDatabase();
+    const clientsCollection = database.collection("clients_info");
 
     const {
       title,
@@ -177,41 +162,134 @@ app.post("/postblogs", async (req, res) => {
       content: content || "",
       author: author || "Unknown",
       authorImage: authorImage || "",
+      createdAt: new Date(),
     };
 
     const result = await clientsCollection.insertOne(newBlog);
 
     res.status(201).json({
       success: true,
-      message: "Blog inserted successfully into clientsCollection",
-      data: { ...newBlog, _id: result.insertedId.toString() },
+      message: "Blog created successfully",
+      data: {
+        ...newBlog,
+        _id: result.insertedId.toString(),
+      },
     });
   } catch (error) {
+    console.error("Error creating blog:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to insert blog",
+      message: "Failed to create blog",
       error: error.message,
     });
   }
 });
 
+// Update a blog
+app.put("/blogs/:slug", async (req, res) => {
+  try {
+    const { database } = await connectToDatabase();
+    const clientsCollection = database.collection("clients_info");
 
+    const { slug } = req.params;
+    const updateData = req.body;
 
+    const result = await clientsCollection.updateOne(
+      { slug },
+      { $set: { ...updateData, updatedAt: new Date() } }
+    );
 
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Blog not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Blog updated successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error updating blog:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update blog",
+      error: error.message,
+    });
+  }
+});
+
+// Delete a blog
+app.delete("/blogs/:slug", async (req, res) => {
+  try {
+    const { database } = await connectToDatabase();
+    const clientsCollection = database.collection("clients_info");
+
+    const { slug } = req.params;
+
+    const result = await clientsCollection.deleteOne({ slug });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Blog not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Blog deleted successfully",
+    });
+  } catch (error) {
+    console.error("Error deleting blog:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete blog",
+      error: error.message,
+    });
+  }
+});
+
+// Root endpoint
 app.get("/", (req, res) => {
   res.json({
     message: "Server is running!",
-    databaseStatus: isConnected ? "Connected ✅" : "Disconnected ❌",
+    environment: process.env.NODE_ENV || "development",
+    database: cachedClient ? "Connected ✅" : "Disconnected ❌",
     endpoints: [
-      "/status - Check server and database status",
-      "/clients - Get all clients",
+      "GET /status - Check server and database status",
+      "GET /blogs - Get all blogs",
+      "GET /blogs/:slug - Get single blog",
+      "POST /postblogs - Create new blog",
+      "PUT /blogs/:slug - Update blog",
+      "DELETE /blogs/:slug - Delete blog",
     ],
   });
 });
 
+// Handle graceful shutdown
+process.on("SIGINT", async () => {
+  console.log("🔄 Shutting down gracefully...");
+  if (cachedClient) {
+    await cachedClient.close();
+    console.log("✅ MongoDB connection closed.");
+  }
+  process.exit(0);
+});
+
+process.on("SIGTERM", async () => {
+  console.log("🔄 Received SIGTERM, shutting down gracefully...");
+  if (cachedClient) {
+    await cachedClient.close();
+    console.log("✅ MongoDB connection closed.");
+  }
+  process.exit(0);
+});
+
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
-  console.log(`📍 Test endpoints:`);
-  console.log(`   http://localhost:${port}/status`);
-  console.log(`   http://localhost:${port}/clients`);
+  console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
+  console.log(`📍 MongoDB URI: ${uri ? "Set ✅" : "Not set ❌"}`);
 });
