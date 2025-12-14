@@ -297,98 +297,34 @@ app.get("/", (req, res) => {
 // Add after your other endpoints in your Express server file
 
 // GET blog stats (likes, views)
-// POST - Update blog stats (like/unlike, view) - IMPROVED VERSION
-app.post("/blogs/:slug/stats", async (req, res) => {
+app.get("/blogs/:slug/stats", async (req, res) => {
   try {
     const { database } = await connectToDatabase();
     const clientsCollection = database.collection("clients_info");
 
     const { slug } = req.params;
-    const { action, userIdentifier } = req.body;
 
-    if (!action) {
-      return res.status(400).json({
-        success: false,
-        message: "Action is required"
-      });
-    }
+    // Find the blog
+    const blog = await clientsCollection.findOne({ slug });
 
-    let updateQuery = {};
-    let options = { returnDocument: 'after' };
-
-    switch (action) {
-      case 'view':
-        updateQuery = { 
-          $inc: { views: 1 },
-          $set: { lastViewed: new Date() }
-        };
-        break;
-
-      case 'like':
-        if (!userIdentifier) {
-          return res.status(400).json({
-            success: false,
-            message: "User identifier is required for liking"
-          });
-        }
-        
-        updateQuery = {
-          $inc: { likes: 1 },
-          $addToSet: { likedBy: userIdentifier } // Use $addToSet to prevent duplicates
-        };
-        break;
-
-      case 'unlike':
-        if (!userIdentifier) {
-          return res.status(400).json({
-            success: false,
-            message: "User identifier is required for unliking"
-          });
-        }
-        
-        updateQuery = {
-          $inc: { likes: -1 },
-          $pull: { likedBy: userIdentifier }
-        };
-        break;
-
-      default:
-        return res.status(400).json({
-          success: false,
-          message: "Invalid action. Use 'like', 'unlike', or 'view'"
-        });
-    }
-
-    // Use findOneAndUpdate to get the updated document in one operation
-    const result = await clientsCollection.findOneAndUpdate(
-      { slug },
-      updateQuery,
-      options
-    );
-
-    if (!result.value) {
+    if (!blog) {
       return res.status(404).json({
         success: false,
         message: "Blog not found",
       });
     }
 
-    const updatedBlog = result.value;
-    const isLiked = updatedBlog.likedBy ? 
-      updatedBlog.likedBy.includes(userIdentifier) : false;
-
+    // Return stats
     res.json({
       success: true,
-      message: `Blog ${action}d successfully`,
       data: {
-        likes: updatedBlog.likes || 0,
-        views: updatedBlog.views || 0,
-        isLiked: isLiked
+        likes: blog.likes || 0,
+        views: blog.views || 0,
+        likedBy: blog.likedBy || []
       }
     });
-
   } catch (error) {
-    console.error("Error updating blog stats:", error);
+    console.error("Error fetching blog stats:", error);
     res.status(500).json({
       success: false,
       message: error.message,
