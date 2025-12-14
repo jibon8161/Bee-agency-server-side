@@ -99,6 +99,7 @@ app.get("/blogs", async (req, res) => {
 });
 
 // Get single blog by slug
+// Get single blog by slug - Update to include the new fields
 app.get("/blogs/:slug", async (req, res) => {
   try {
     const { database } = await connectToDatabase();
@@ -114,9 +115,20 @@ app.get("/blogs/:slug", async (req, res) => {
       });
     }
 
+    // Ensure all fields exist even if they're not in the database yet
+    const blogWithDefaults = {
+      ...blog,
+      likes: blog.likes || 0,
+      views: blog.views || 0,
+      likedBy: blog.likedBy || [],
+      tags: blog.tags || [],
+      category: blog.category || "",
+      authorImage: blog.authorImage || "",
+    };
+
     res.json({
       success: true,
-      data: blog,
+      data: blogWithDefaults,
     });
   } catch (error) {
     console.error("Error fetching blog:", error);
@@ -128,6 +140,7 @@ app.get("/blogs/:slug", async (req, res) => {
 });
 
 // Create a new blog
+// Find this endpoint in your Express server file and update it:
 app.post("/postblogs", async (req, res) => {
   try {
     const { database } = await connectToDatabase();
@@ -142,6 +155,8 @@ app.post("/postblogs", async (req, res) => {
       content,
       author,
       authorImage,
+      tags, // Add tags if you have them
+      category // Add category if you have it
     } = req.body;
 
     // Validate required fields
@@ -153,6 +168,7 @@ app.post("/postblogs", async (req, res) => {
       });
     }
 
+    // Create the new blog with ALL fields
     const newBlog = {
       title,
       slug,
@@ -162,7 +178,16 @@ app.post("/postblogs", async (req, res) => {
       content: content || "",
       author: author || "Unknown",
       authorImage: authorImage || "",
+      tags: tags || [], // Default to empty array
+      category: category || "", // Default to empty string
+      
+      // Add these new fields for stats tracking
+      likes: 0,
+      views: 0,
+      likedBy: [],
+      lastViewed: null,
       createdAt: new Date(),
+      updatedAt: new Date(),
     };
 
     const result = await clientsCollection.insertOne(newBlog);
@@ -268,6 +293,176 @@ app.get("/", (req, res) => {
     ],
   });
 });
+
+// Add after your other endpoints in your Express server file
+
+// GET blog stats (likes, views)
+app.get("/blogs/:slug/stats", async (req, res) => {
+  try {
+    const { database } = await connectToDatabase();
+    const clientsCollection = database.collection("clients_info");
+
+    const { slug } = req.params;
+
+    // Find the blog
+    const blog = await clientsCollection.findOne({ slug });
+
+    if (!blog) {
+      return res.status(404).json({
+        success: false,
+        message: "Blog not found",
+      });
+    }
+
+    // Return stats
+    res.json({
+      success: true,
+      data: {
+        likes: blog.likes || 0,
+        views: blog.views || 0,
+        likedBy: blog.likedBy || []
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching blog stats:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+// POST - Update blog stats (like/unlike, view)
+app.post("/blogs/:slug/stats", async (req, res) => {
+  try {
+    const { database } = await connectToDatabase();
+    const clientsCollection = database.collection("clients_info");
+
+    const { slug } = req.params;
+    const { action, userIdentifier } = req.body; // action: 'like', 'unlike', 'view'
+
+    if (!action) {
+      return res.status(400).json({
+        success: false,
+        message: "Action is required"
+      });
+    }
+
+    // Find the blog
+    const blog = await clientsCollection.findOne({ slug });
+
+    if (!blog) {
+      return res.status(404).json({
+        success: false,
+        message: "Blog not found",
+      });
+    }
+
+    let updateQuery = {};
+    let isLiked = blog.likedBy ? blog.likedBy.includes(userIdentifier) : false;
+
+    switch (action) {
+      case 'view':
+        // Increment view count
+        updateQuery = { 
+          $inc: { views: 1 },
+          $set: { 
+            lastViewed: new Date(),
+            likedBy: blog.likedBy || []
+          }
+        };
+        break;
+
+      case 'like':
+        if (!userIdentifier) {
+          return res.status(400).json({
+            success: false,
+            message: "User identifier is required for liking"
+          });
+        }
+
+        if (!blog.likedBy) {
+          // Initialize likedBy array
+          updateQuery = { 
+            $inc: { likes: 1 },
+            $set: { likedBy: [userIdentifier] }
+          };
+          isLiked = true;
+        } else if (!blog.likedBy.includes(userIdentifier)) {
+          // Add user to likedBy array
+          updateQuery = { 
+            $inc: { likes: 1 },
+            $push: { likedBy: userIdentifier }
+          };
+          isLiked = true;
+        }
+        break;
+
+      case 'unlike':
+        if (!userIdentifier) {
+          return res.status(400).json({
+            success: false,
+            message: "User identifier is required for unliking"
+          });
+        }
+
+        if (blog.likedBy && blog.likedBy.includes(userIdentifier)) {
+          updateQuery = { 
+            $inc: { likes: -1 },
+            $pull: { likedBy: userIdentifier }
+          };
+          isLiked = false;
+        }
+        break;
+
+      default:
+        return res.status(400).json({
+          success: false,
+          message: "Invalid action. Use 'like', 'unlike', or 'view'"
+        });
+    }
+
+    // If no update needed (e.g., trying to like twice)
+    if (Object.keys(updateQuery).length === 0) {
+      return res.json({
+        success: true,
+        message: "No update needed",
+        data: {
+          likes: blog.likes || 0,
+          views: blog.views || 0,
+          isLiked: blog.likedBy ? blog.likedBy.includes(userIdentifier) : false
+        }
+      });
+    }
+
+    // Update the blog
+    const result = await clientsCollection.updateOne(
+      { slug },
+      updateQuery
+    );
+
+    // Get updated blog
+    const updatedBlog = await clientsCollection.findOne({ slug });
+
+    res.json({
+      success: true,
+      message: `Blog ${action}d successfully`,
+      data: {
+        likes: updatedBlog.likes || 0,
+        views: updatedBlog.views || 0,
+        isLiked: isLiked
+      }
+    });
+
+  } catch (error) {
+    console.error("Error updating blog stats:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
 
 // Handle graceful shutdown
 process.on("SIGINT", async () => {
